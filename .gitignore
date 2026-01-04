@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Project specific
+downloads/
+auth.json
+logs/
+
+# System
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

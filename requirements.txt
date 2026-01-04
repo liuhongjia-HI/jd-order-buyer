@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+playwright
+pandas
+openpyxl
+requests
+pillow
+beautifulsoup4
+loguru
+PySide6
+playwright-stealth

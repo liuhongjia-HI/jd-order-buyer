@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>京东订单导出工具 - Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="logo-area">
+                <div class="logo-icon">🛠️</div>
+                <div class="logo-text">JDTools</div>
+            </div>
+
+            <div class="nav-menu">
+                <div class="nav-item active" data-view="console">
+                    <span class="icon">💻</span> 控制台 / Console
+                </div>
+                <div class="nav-item" data-view="data">
+                    <span class="icon">📊</span> 数据预览 / Data
+                </div>
+            </div>
+
+            <div class="settings-link">
+                ⚙️ 设置 / Settings
+            </div>
+
+            <div class="account-btn" onclick="startLogin()">
+                👋 切换京东账号
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <div class="view" id="viewConsole">
+                <!-- Top Status Cards -->
+                <div class="status-row">
+                    <div class="card status-card">
+                        <div class="card-label">状态</div>
+                        <div class="card-value status-text" id="statusText">就绪</div>
+                    </div>
+                    <div class="card count-card">
+                        <div class="card-label">已捕获订单</div>
+                        <div class="card-value highlight-number" id="orderCount">0</div>
+                    </div>
+                </div>
+
+                <!-- Console Output -->
+                <div class="console-box" id="consoleBox">
+                    <div class="log-line">[系统] 等待指令...</div>
+                </div>
+
+                <!-- Action Area -->
+                <div class="action-area">
+                    <div class="date-selector">
+                        <label>时间范围: </label>
+                        <select id="dateRange">
+                            <!-- Options will be populated by JS -->
+                        </select>
+                    </div>
+                    <button class="start-btn" onclick="startScrape()">
+                        🚀 开始采集
+                    </button>
+                </div>
+            </div>
+
+            <div class="view" id="viewData" style="display:none;">
+                <div class="data-card">
+                    <div class="data-card-header">
+                        <div>
+                            <div class="data-title">数据中心（最近一次采集）</div>
+                            <div class="data-subtitle">最新导出文件信息</div>
+                        </div>
+                        <div class="data-actions">
+                            <button class="btn-secondary" id="btnOpenDownloads">打开下载目录</button>
+                            <a class="btn-primary" id="btnDownloadLatest" href="#" download>查看/下载</a>
+                        </div>
+                    </div>
+                    <div class="data-meta">
+                        <div class="meta-row"><span>最新文件：</span><span id="metaName">-</span></div>
+                        <div class="meta-row"><span>生成时间：</span><span id="metaTime">-</span></div>
+                        <div class="meta-row"><span>大小：</span><span id="metaSize">-</span></div>
+                        <div class="meta-row"><span>保存路径：</span><span id="metaPath">-</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+
+</html>

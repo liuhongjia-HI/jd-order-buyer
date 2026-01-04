@@ -1,6 +1,7 @@
 import json
 import time
 import os
+import sys
 import random
 import re
 from datetime import datetime
@@ -17,13 +18,19 @@ from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import get_column_letter
 
+
+def _data_base_dir():
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
 class JDScraper:
     def __init__(self, headless=False):
         self.headless = headless
         self.browser = None
         self.context = None
         self.page = None
-        self.base_dir = Path(__file__).resolve().parent.parent
+        self.base_dir = _data_base_dir()
         self.auth_file = str(self.base_dir / "auth.json")
         # 可配置下载目录与嵌入图片开关
         self.download_dir = Path(os.getenv("JD_DOWNLOAD_DIR", self.base_dir / "downloads")).expanduser().resolve()

@@ -35,8 +35,12 @@ echo [2/5] Installing deps...
 echo [3/5] Installing Playwright chromium...
 "%VENV_DIR%\Scripts\python.exe" -m playwright install chromium
 
+rem Ensure data dirs exist
+if not exist "downloads" mkdir "downloads"
+
 echo [4/5] Building...
-"%VENV_DIR%\Scripts\python.exe" -m pyinstaller --onefile --noconsole --name "%APP_NAME%" --add-data "static;static" --add-data "downloads;downloads" desktop_main.py
+"%VENV_DIR%\Scripts\python.exe" -m PyInstaller --onefile --noconsole --name "%APP_NAME%" --collect-all playwright --collect-all playwright_stealth --collect-all PySide6 main.py
 
 echo [5/5] Done. Output: dist\%APP_NAME%.exe
 endlocal
+

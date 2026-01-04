@@ -13,8 +13,39 @@ downloads/
 auth.json
 logs/
 
+# Env files
+.env
+.env.*
+!.env.example
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.nox/
+.tox/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+pip-wheel-metadata/
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.whl
+*.exe
+*.msi
+
+# Logs and temp files
+*.log
+*.tmp
+
 # System
 .DS_Store
+Thumbs.db
+Desktop.ini
 
 # IDE
 .idea/

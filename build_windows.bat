@@ -1,33 +1,42 @@
 @echo off
 setlocal
 
-rem === 配置 ===
-set APP_NAME=京东订单导出
-set VENV_DIR=.venv
+rem === Config ===
+set "APP_NAME=jd-order-export"
+set "VENV_DIR=.venv"
+set "PYTHON_EXE=D:\Programs\Python\Python313\python.exe"
 
-echo [1/5] 准备虚拟环境...
+rem If the pinned Python path doesn't exist, fall back to py -3 or python.
+if not exist "%PYTHON_EXE%" (
+    where py >nul 2>nul
+    if errorlevel 1 (
+        set "PYTHON_EXE=python"
+        set "PYTHON_ARGS="
+    ) else (
+        set "PYTHON_EXE=py"
+        set "PYTHON_ARGS=-3"
+    )
+) else (
+    set "PYTHON_ARGS="
+)
+
+echo [1/5] Preparing venv...
 if not exist "%VENV_DIR%\Scripts\python.exe" (
-    python -m venv "%VENV_DIR%"
+    "%PYTHON_EXE%" %PYTHON_ARGS% -m venv "%VENV_DIR%"
 )
 
 call "%VENV_DIR%\Scripts\activate.bat"
 
-echo [2/5] 安装依赖...
-pip install --upgrade pip >nul
-pip install -r requirements.txt >nul
-pip install pyinstaller >nul
+echo [2/5] Installing deps...
+"%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip
+"%VENV_DIR%\Scripts\python.exe" -m pip install -r requirements.txt
+"%VENV_DIR%\Scripts\python.exe" -m pip install pyinstaller
 
-echo [3/5] 安装 Playwright 浏览器 (chromium)...
-python -m playwright install chromium
+echo [3/5] Installing Playwright chromium...
+"%VENV_DIR%\Scripts\python.exe" -m playwright install chromium
 
-echo [4/5] 开始打包...
-pyinstaller ^
-  --onefile ^
-  --noconsole ^
-  --name "%APP_NAME%" ^
-  --add-data "static;static" ^
-  --add-data "downloads;downloads" ^
-  desktop_main.py
+echo [4/5] Building...
+"%VENV_DIR%\Scripts\python.exe" -m pyinstaller --onefile --noconsole --name "%APP_NAME%" --add-data "static;static" --add-data "downloads;downloads" desktop_main.py
 
-echo [5/5] 完成。可执行文件位于: dist\%APP_NAME%.exe
+echo [5/5] Done. Output: dist\%APP_NAME%.exe
 endlocal

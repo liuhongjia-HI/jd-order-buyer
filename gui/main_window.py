@@ -265,144 +265,214 @@ class MainWindow(QWidget):
     def _apply_styles(self):
         self.setStyleSheet(
             """
+            * {
+                outline: none;
+            }
             #appRoot {
-                background-color: #151521;
-                color: #e6e9f2;
-                font-family: "Segoe UI";
+                background-color: #0d1117;
+                color: #c9d1d9;
+                font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
                 font-size: 14px;
             }
             QLabel {
-                color: #e6e9f2;
+                color: #c9d1d9;
             }
             QWidget#sidebar {
-                background-color: #232333;
-                border-right: 1px solid #3b3b4f;
+                background-color: #161b22;
+                border-right: 1px solid #30363d;
             }
             QLabel#logoText {
-                font-size: 22px;
-                font-weight: 600;
+                font-size: 24px;
+                font-weight: 700;
+                color: #58a6ff;
+                padding-left: 8px;
             }
             QLabel#authLabel {
-                color: #a4acc7;
+                color: #8b949e;
                 font-size: 13px;
+                padding-left: 8px;
             }
             QPushButton[nav="true"] {
                 text-align: left;
-                padding: 10px 12px;
-                border-radius: 8px;
+                padding: 12px 16px;
+                border-radius: 6px;
                 border: none;
-                color: #a4acc7;
+                color: #8b949e;
                 background: transparent;
+                font-weight: 500;
+                margin: 0 8px;
             }
             QPushButton[nav="true"]:hover {
-                background-color: #3699ff;
-                color: #ffffff;
+                background-color: #21262d;
+                color: #c9d1d9;
             }
             QPushButton[nav="true"][active="true"] {
-                background-color: #3699ff;
+                background-color: #1f6feb;
                 color: #ffffff;
+                font-weight: 600;
             }
             QLabel#settingsLabel {
-                color: #a4acc7;
-                padding: 8px 6px;
+                color: #8b949e;
+                padding: 8px 14px;
+                font-size: 12px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
             }
             QPushButton#accountBtn {
-                border: 1px solid #f64e60;
-                color: #f64e60;
-                border-radius: 8px;
+                border: 1px solid #30363d;
+                color: #c9d1d9;
+                border-radius: 6px;
                 padding: 10px;
-                background: transparent;
+                background: #21262d;
+                margin: 0 8px;
+                font-weight: 500;
             }
             QPushButton#accountBtn:hover {
-                background-color: #f64e60;
-                color: #ffffff;
+                background-color: #30363d;
+                border-color: #8b949e;
             }
             QFrame#card, QFrame#dataCard {
-                background-color: #2b2b40;
+                background-color: #161b22;
                 border-radius: 12px;
-                border: 1px solid #3b3b4f;
+                border: 1px solid #30363d;
             }
             QLabel#cardLabel {
-                color: #a4acc7;
+                color: #8b949e;
                 font-size: 14px;
+                font-weight: 500;
             }
-            QLabel#statusValue, QLabel#countValue {
-                font-size: 30px;
-                font-weight: 600;
-                color: #3699ff;
+            QLabel#statusValue {
+                font-size: 32px;
+                font-weight: 700;
+                color: #58a6ff;
+            }
+            QLabel#countValue {
+                font-size: 32px;
+                font-weight: 700;
+                color: #3fb950;
             }
             QPlainTextEdit#consoleBox {
-                background-color: #0f0f16;
-                color: #c8facc;
-                border: 1px solid #3b3b4f;
+                background-color: #0d1117;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
                 border-radius: 12px;
-                padding: 8px;
-                font-family: Consolas, "Courier New", monospace;
+                padding: 12px;
+                font-family: "JetBrains Mono", Consolas, monospace;
+                font-size: 13px;
+                line-height: 1.4;
             }
             QComboBox#rangeCombo {
-                background-color: #2b2b40;
-                color: #ffffff;
-                border: 1px solid #3b3b4f;
+                background-color: #161b22;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
                 border-radius: 6px;
-                padding: 4px 8px;
+                padding: 6px 12px;
                 min-width: 160px;
             }
+            QComboBox#rangeCombo:hover {
+                border-color: #58a6ff;
+            }
+            QComboBox#rangeCombo::drop-down {
+                border: none;
+            }
+            QComboBox#rangeCombo QAbstractItemView {
+                background-color: #161b22;
+                color: #c9d1d9;
+                selection-background-color: #1f6feb;
+                selection-color: #ffffff;
+                outline: none;
+                border: 1px solid #30363d;
+            }
             QPushButton#startBtn {
-                background-color: #3699ff;
+                background-color: #238636;
                 color: #ffffff;
                 border: none;
-                border-radius: 18px;
-                padding: 8px 22px;
+                border-radius: 6px;
+                padding: 8px 24px;
+                font-weight: 600;
+                font-size: 14px;
             }
             QPushButton#startBtn:hover {
-                background-color: #187de4;
+                background-color: #2ea043;
+            }
+            QPushButton#startBtn:disabled {
+                background-color: #21262d;
+                color: #484f58;
             }
             QLabel#dataTitle {
                 font-size: 18px;
                 font-weight: 600;
+                color: #c9d1d9;
             }
             QLabel#dataSubtitle {
-                color: #a4acc7;
+                color: #8b949e;
                 font-size: 13px;
             }
             QLabel[metaKey="true"] {
-                color: #a4acc7;
+                color: #8b949e;
+                font-weight: 500;
             }
             QPushButton#btnPrimary {
-                background-color: #3699ff;
+                background-color: #1f6feb;
                 color: #ffffff;
                 border: none;
-                border-radius: 8px;
-                padding: 6px 12px;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-weight: 500;
             }
             QPushButton#btnPrimary:hover {
-                background-color: #187de4;
+                background-color: #388bfd;
             }
             QPushButton#btnSecondary {
                 background-color: transparent;
-                color: #ffffff;
-                border: 1px solid #3b3b4f;
-                border-radius: 8px;
-                padding: 6px 12px;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-weight: 500;
             }
             QPushButton#btnSecondary:hover {
-                background-color: #2b2b40;
+                background-color: #21262d;
+                border-color: #8b949e;
             }
             QListWidget#downloadList {
-                background-color: #0f0f16;
-                color: #e6e9f2;
-                border: 1px solid #3b3b4f;
-                border-radius: 10px;
-                padding: 6px;
+                background-color: #0d1117;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 8px;
+                padding: 5px;
             }
             QListWidget#downloadList::item {
-                padding: 6px;
+                padding: 8px 12px;
+                border-radius: 6px;
+                margin-bottom: 2px;
             }
             QListWidget#downloadList::item:selected {
-                background-color: #3699ff;
+                background-color: #1f6feb;
                 color: #ffffff;
             }
-"""
+            QListWidget#downloadList::item:hover:!selected {
+                background-color: #161b22;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: transparent;
+                width: 10px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #30363d;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #58a6ff;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            """
         )
 
     def _init_range_options(self):
@@ -574,4 +644,3 @@ class MainWindow(QWidget):
 
         self.status_label.setText("采集中")
         self._start_task(f"开始采集 (Filter={filter_type})...", lambda: self.scraper.scrape_orders(filter_type), _done)
-

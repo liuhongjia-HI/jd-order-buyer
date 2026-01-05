@@ -149,11 +149,21 @@ class JDScraper:
 
         ua = self.user_agents[0]
         # Try launch options: Bundled -> Edge -> Chrome
+        # Try launch options: Bundled -> Edge -> Chrome
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run",
+            "--no-service-autorun",
+            "--password-store=basic",
+            "--use-mock-keychain",
+        ]
+        
         try:
             logger.info("Generic launch...")
             self.browser = self.playwright.chromium.launch(
                 headless=self.headless,
-                args=["--disable-blink-features=AutomationControlled"]
+                args=launch_args,
+                ignore_default_args=["--enable-automation"]
             )
         except Exception:
             try:
@@ -161,14 +171,16 @@ class JDScraper:
                 self.browser = self.playwright.chromium.launch(
                     channel="msedge",
                     headless=self.headless,
-                    args=["--disable-blink-features=AutomationControlled"]
+                    args=launch_args,
+                    ignore_default_args=["--enable-automation"]
                 )
             except Exception:
                 logger.info("Edge not found. Trying system Chrome...")
                 self.browser = self.playwright.chromium.launch(
                     channel="chrome",
                     headless=self.headless,
-                    args=["--disable-blink-features=AutomationControlled"]
+                    args=launch_args,
+                    ignore_default_args=["--enable-automation"]
                 )
 
         
@@ -188,6 +200,25 @@ class JDScraper:
             **load_options
         )
         
+        # Inject stealth scripts to hide webdriver property
+        self.context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['zh-CN', 'zh', 'en']
+            });
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+            );
+        """)
+
         self.page = self.context.new_page()
         try:
             self.stealth.apply_stealth_sync(self.context)

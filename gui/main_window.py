@@ -617,7 +617,7 @@ class MainWindow(QWidget):
             self._refresh_auth_status()
 
         self.status_label.setText("登录中")
-        self._start_task("开始登录，请在弹出的浏览器完成扫码...", self.scraper.login, _done)
+        self._start_task("开始登录，请在弹出的浏览器完成扫码...", lambda: self.scraper.login(force_fresh=True), _done)
 
     def start_scrape(self):
         filter_type = self.range_combo.currentData()

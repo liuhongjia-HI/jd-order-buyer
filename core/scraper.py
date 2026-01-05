@@ -88,13 +88,13 @@ class JDScraper:
             raise Exception("未检测到 auth.json，请先登录一次再尝试采集。")
 
     def _wait_for_auth_cookie(self, timeout=300000):
-        """Wait until JD login cookies appear (thor/pt_key/pin)."""
+        """Wait until JD login cookies appear (pt_key/pt_pin)."""
         deadline = time.time() + (timeout / 1000)
         while time.time() < deadline:
             try:
                 cookies = self.context.cookies()
                 names = {c.get("name") for c in cookies}
-                if any(n in names for n in ("thor", "pt_key", "pin")):
+                if "pt_key" in names or "pt_pin" in names:
                     return True
             except Exception:
                 pass

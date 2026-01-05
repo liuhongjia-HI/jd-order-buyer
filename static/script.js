@@ -52,7 +52,7 @@ window.onload = async () => {
         log("检测到已保存的登录状态 (auth.json)。");
         document.getElementById('statusText').innerText = "已登录";
     } else {
-        log("未检测到登录状态，请先点击'切换京东账号'进行扫码。");
+        log("未检测到登录状态，请先点击'退出京东登录'进行扫码。");
     }
 };
 

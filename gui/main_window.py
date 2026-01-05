@@ -99,9 +99,9 @@ class MainWindow(QWidget):
         self.settings_label.setObjectName("settingsLabel")
         sidebar_layout.addWidget(self.settings_label)
 
-        self.account_btn = QPushButton("切换京东账号")
+        self.account_btn = QPushButton("退出京东登录")
         self.account_btn.setObjectName("accountBtn")
-        self.account_btn.clicked.connect(self.start_login)
+        self.account_btn.clicked.connect(self.handle_account_btn)
         sidebar_layout.addWidget(self.account_btn)
 
         root.addWidget(self.sidebar)
@@ -526,9 +526,11 @@ class MainWindow(QWidget):
     def _refresh_auth_status(self):
         self.auth_path = Path(self.scraper.auth_file)
         if self.auth_path.exists():
-            self.auth_label.setText("登录状态: 已保存 auth.json")
+            self.auth_label.setText("登录状态: 已登录")
+            self.account_btn.setText("退出京东登录")
         else:
-            self.auth_label.setText("登录状态: 未检测到 auth.json")
+            self.auth_label.setText("登录状态: 未登录")
+            self.account_btn.setText("京东账号登录")
 
     def _format_size(self, size: int) -> str:
         if size is None:
@@ -606,6 +608,32 @@ class MainWindow(QWidget):
                 subprocess.run(["xdg-open", path], check=False)
         except Exception as exc:
             QMessageBox.warning(self, "打开失败", str(exc))
+
+    def handle_account_btn(self):
+        self.auth_path = Path(self.scraper.auth_file)
+        if self.auth_path.exists():
+            reply = QMessageBox.question(
+                self,
+                "确认退出",
+                "确定要退出当前京东账号吗？\n退出后需要重新扫码登录。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.logout()
+        else:
+            self.start_login()
+
+    def logout(self):
+        try:
+            if self.auth_path.exists():
+                os.remove(self.auth_path)
+            self._append_log("已退出登录 (auth.json 已删除)")
+            self.status_label.setText("未登录")
+        except Exception as e:
+            self._append_log(f"退出失败: {e}")
+            QMessageBox.warning(self, "错误", f"退出失败: {e}")
+        self._refresh_auth_status()
 
     def start_login(self):
         def _done(success):

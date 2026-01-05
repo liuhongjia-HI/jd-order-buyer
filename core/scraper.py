@@ -49,7 +49,7 @@ class JDScraper:
         self.stealth = Stealth()
         self._lock = threading.RLock()
         self.address_cache = {}
-        self.embed_images = os.getenv("JD_EMBED_IMAGES", "0") != "0"
+        self.embed_images = os.getenv("JD_EMBED_IMAGES", "1") != "0"
         self.fetch_address = os.getenv("JD_FETCH_ADDRESS", "1") != "0"
         self.address_blocked = False
         self.address_blocked_reason = ""
@@ -1360,6 +1360,9 @@ class JDScraper:
         col_idx = list(df.columns).index("商品图片") + 1  # 1-based
         col_letter = get_column_letter(col_idx)
 
+        # Set column width (approximate for 80px)
+        ws.column_dimensions[col_letter].width = 12
+
         headers = {
             "User-Agent": random.choice(self.user_agents),
             "Accept-Language": self.accept_language,
@@ -1379,6 +1382,8 @@ class JDScraper:
                 cell_addr = f"{col_letter}{excel_row}"
                 ws.add_image(img, cell_addr)
                 ws[cell_addr].value = ""
+                # Set row height to accommodate image
+                ws.row_dimensions[excel_row].height = 65
             except Exception as e:
                 logger.warning(f"Embed image failed for row {excel_row}: {e}")
                 continue

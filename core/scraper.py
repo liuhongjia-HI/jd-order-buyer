@@ -33,39 +33,47 @@ class JDScraper:
         self.detail_page = None
         self.playwright = None
         self.base_dir = _data_base_dir()
-        self.auth_file = str(self.base_dir / "auth.json")
         self.profile_name = (os.getenv("JD_PROFILE", "default") or "default").strip()
         default_profile_dir = self.base_dir / "profiles" / self.profile_name
         self.profile_dir = Path(os.getenv("JD_PROFILE_DIR", default_profile_dir)).expanduser().resolve()
+        self.auth_file = str(self.profile_dir / "auth.json")
         self.fingerprint_file = Path(
             os.getenv("JD_FINGERPRINT_FILE", self.profile_dir / "fingerprint.json")
         ).expanduser().resolve()
         self.use_persistent_context = os.getenv("JD_PERSISTENT_PROFILE", "1") != "0"
+        self.skip_home_warmup = os.getenv("JD_SKIP_HOME_WARMUP", "1") != "0"
+        self.browser_channel = (os.getenv("JD_BROWSER_CHANNEL", "chrome") or "chrome").strip()
         # 可配置下载目录与嵌入图片开关
         self.download_dir = Path(os.getenv("JD_DOWNLOAD_DIR", self.base_dir / "downloads")).expanduser().resolve()
         self.base_url = "https://order.jd.com/center/list.action"
         self.stealth = Stealth()
         self._lock = threading.RLock()
         self.address_cache = {}
-        self.embed_images = os.getenv("JD_EMBED_IMAGES", "1") != "0"
+        self.embed_images = os.getenv("JD_EMBED_IMAGES", "0") != "0"
+        self.fetch_address = os.getenv("JD_FETCH_ADDRESS", "1") != "0"
+        self.address_blocked = False
+        self.address_blocked_reason = ""
+        self.address_pause_min = self._safe_float(os.getenv("JD_ADDR_PAUSE_MIN", "1.8"), default=1.8)
+        self.address_pause_max = self._safe_float(os.getenv("JD_ADDR_PAUSE_MAX", "3.6"), default=3.6)
+        self.detail_safe_min = self._safe_float(os.getenv("JD_DETAIL_SAFE_MIN", "5.5"), default=5.5)
         self.goto_retries = self._safe_int(os.getenv("JD_GOTO_RETRIES", "3"), default=3)
         self.risk_wait_s = self._safe_int(os.getenv("JD_RISK_WAIT", "120"), default=120)
         self.rate_limits = {
-            "page": self._safe_float(os.getenv("JD_RATE_PAGE_MIN", "1.8"), default=1.8),
-            "detail": self._safe_float(os.getenv("JD_RATE_DETAIL_MIN", "2.2"), default=2.2),
+            "page": self._safe_float(os.getenv("JD_RATE_PAGE_MIN", "2.5"), default=2.5),
+            "detail": self._safe_float(os.getenv("JD_RATE_DETAIL_MIN", "4.0"), default=4.0),
             "image": self._safe_float(os.getenv("JD_RATE_IMAGE_MIN", "0.6"), default=0.6),
         }
         self.rate_last = {"page": 0.0, "detail": 0.0, "image": 0.0}
         self.rate_multipliers = {"page": 1.0, "detail": 1.0, "image": 1.0}
         self.rate_backoff_max = self._safe_float(os.getenv("JD_RATE_BACKOFF_MAX", "6"), default=6.0)
         self.image_retries = self._safe_int(os.getenv("JD_IMAGE_RETRIES", "2"), default=2)
-        self.browse_prob = self._safe_float(os.getenv("JD_BROWSE_PROB", "0.35"), default=0.35)
+        self.browse_prob = self._safe_float(os.getenv("JD_BROWSE_PROB", "0"), default=0.0)
         self.browse_every = self._safe_int(os.getenv("JD_BROWSE_EVERY", "0"), default=0)
-        self.detail_browse_prob = self._safe_float(os.getenv("JD_DETAIL_BROWSE_PROB", "0.6"), default=0.6)
+        self.detail_browse_prob = self._safe_float(os.getenv("JD_DETAIL_BROWSE_PROB", "0"), default=0.0)
         self.browse_urls = self._parse_browse_urls(os.getenv("JD_BROWSE_URLS", "https://www.jd.com/,https://home.jd.com/"))
         self.http = requests.Session()
+        self._last_403_log_ts = 0.0
         self.risk_url_keywords = (
-            "passport.jd.com",
             "safe.jd.com",
             "risk",
             "captcha",
@@ -73,14 +81,18 @@ class JDScraper:
             "challenge",
         )
         self.risk_text_keywords = (
-            "验证码",
             "安全验证",
             "访问过于频繁",
             "异常访问",
-            "风险",
-            "滑块",
+            "风险验证",
+            "风险校验",
+            "风险提示",
             "请使用京东客户端",
+            "请完成验证",
+            "验证失败",
+            "行为异常",
         )
+        self.risk_text_check = os.getenv("JD_RISK_TEXT_CHECK", "0") != "0"
         self.fingerprint = self._load_or_create_fingerprint()
         # Pool of UAs；可通过 JD_UA 固定，优先保持一致性
         self.user_agents = [self.fingerprint["user_agent"]]
@@ -90,6 +102,14 @@ class JDScraper:
         self.viewport = self.fingerprint["viewport"]
         self.device_scale_factor = self.fingerprint["device_scale_factor"]
         self.is_mobile = self.fingerprint["is_mobile"]
+        self.profile_auto_new = os.getenv("JD_PROFILE_AUTO_NEW", "1") != "0"
+        self.profile_auto_new_on_relogin = os.getenv("JD_PROFILE_AUTO_NEW_ON_RELOGIN", "1") != "0"
+        if self.fetch_address and self.rate_limits["detail"] < self.detail_safe_min:
+            self.rate_limits["detail"] = self.detail_safe_min
+        self.force_window_size = os.getenv("JD_FORCE_WINDOW_SIZE", "0") != "0"
+        self.window_maximized = os.getenv("JD_WINDOW_MAXIMIZED", "1") != "0"
+        self.window_width = self._safe_int(os.getenv("JD_WINDOW_W", self.viewport["width"]), default=self.viewport["width"])
+        self.window_height = self._safe_int(os.getenv("JD_WINDOW_H", self.viewport["height"]), default=self.viewport["height"])
 
     def _random_sleep(self, min_s=1.5, max_s=4.0):
         """Random delay to mimic human behavior"""
@@ -156,11 +176,8 @@ class JDScraper:
 
         browse_page = self.context.new_page()
         try:
-            try:
-                self.stealth.apply_stealth_sync(browse_page)
-            except Exception:
-                pass
             logger.info(f"Simulating browse path ({stage})...")
+            self._apply_window_state(browse_page)
             for url in self.browse_urls:
                 try:
                     self._rate_limit("page")
@@ -183,17 +200,52 @@ class JDScraper:
             except Exception:
                 pass
 
+    def _goto_login_page(self, retries=2, timeout=45000):
+        login_url = "https://passport.jd.com/new/login.aspx"
+        last_err = None
+        for attempt in range(1, retries + 1):
+            try:
+                if not self.page or self.page.is_closed():
+                    self.page = self.context.new_page()
+                    self._apply_window_state(self.page)
+                self._rate_limit("page")
+                self.page.goto(login_url, wait_until="domcontentloaded", timeout=timeout)
+                reason = self._detect_risk_page(self.page)
+                if reason:
+                    self._handle_risk_page(self.page, reason, fatal=False)
+                return True
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Login page goto failed ({attempt}/{retries}): {e}")
+                self._bump_backoff("page")
+                try:
+                    if self.page and not self.page.is_closed():
+                        self.page.close()
+                except Exception:
+                    pass
+                self.page = None
+                time.sleep(1.0)
+        if last_err:
+            raise last_err
+        return False
+
     def _detect_risk_page(self, page):
         url = (page.url or "").lower()
+        if "passport.jd.com" in url:
+            return ""
         for kw in self.risk_url_keywords:
             if kw in url:
                 return f"url:{kw}"
+
+        if not self.risk_text_check:
+            return ""
 
         try:
             title = page.title() or ""
         except Exception:
             title = ""
 
+        text = ""
         try:
             text = page.evaluate(
                 "() => (document.body && document.body.innerText) ? document.body.innerText.slice(0, 2000) : ''"
@@ -201,19 +253,45 @@ class JDScraper:
         except Exception:
             text = ""
 
+        # Reduce false positives: require captcha-like DOM evidence.
+        try:
+            has_captcha = page.evaluate(
+                """() => {
+                    const bodyText = document.body && document.body.innerText ? document.body.innerText : '';
+                    if (!/验证码|滑块验证|请完成验证|安全验证/.test(bodyText)) return false;
+                    const inputHit = !!document.querySelector(
+                        'input[placeholder*="验证码"], input[name*="code"], input[id*="code"], input[type="tel"]'
+                    );
+                    const imgHit = !!document.querySelector(
+                        'img[src*="captcha"], img[id*="captcha"], canvas[id*="captcha"]'
+                    );
+                    const sliderHit = !!document.querySelector(
+                        '[class*="slider"], [id*="slider"], [class*="jrv"], [id*="jrv"], [class*="captcha"]'
+                    );
+                    return inputHit || imgHit || sliderHit;
+                }"""
+            )
+        except Exception:
+            has_captcha = False
+
+        if has_captcha:
+            return "dom:captcha"
+
         haystack = f"{title}\n{text}"
         for kw in self.risk_text_keywords:
             if kw in haystack:
                 return f"text:{kw}"
         return ""
 
-    def _handle_risk_page(self, page, reason: str, fatal: bool = True):
+    def _handle_risk_page(self, page, reason: str, fatal: bool = True, wait_s: int = None):
         if not reason:
             return False
         logger.warning(f"Detected risk page ({reason}).")
         self._bump_backoff("page", factor=2.0)
         self._bump_backoff("detail", factor=2.0)
-        wait_s = max(5, self.risk_wait_s)
+        if wait_s is None:
+            wait_s = self.risk_wait_s
+        wait_s = max(5, wait_s)
         if self.headless:
             if fatal:
                 raise Exception(f"检测到风控/验证码页，请人工处理后重试: {reason}")
@@ -234,10 +312,7 @@ class JDScraper:
         if self.detail_page and not self.detail_page.is_closed():
             return self.detail_page
         self.detail_page = self.context.new_page()
-        try:
-            self.stealth.apply_stealth_sync(self.detail_page)
-        except Exception:
-            pass
+        self._apply_window_state(self.detail_page)
         return self.detail_page
 
     def _reset_detail_page(self):
@@ -268,8 +343,8 @@ class JDScraper:
                 self._random_sleep(1.2, 2.5)
                 reason = self._detect_risk_page(self.page)
                 if reason:
-                    if self._handle_risk_page(self.page, reason, fatal=False):
-                        continue
+                    if self._handle_risk_page(self.page, reason, fatal=False, wait_s=10):
+                        return False
                 if "jd.com" in self.page.url:
                     return True
             except Exception as e:
@@ -281,32 +356,142 @@ class JDScraper:
         if not os.path.exists(self.auth_file):
             raise Exception("未检测到 auth.json，请先登录一次再尝试采集。")
 
+    def _has_auth_cookies(self):
+        try:
+            cookies = self.context.cookies()
+        except Exception:
+            return False
+
+        cookie_map = {c.get("name"): c for c in cookies}
+        now = time.time()
+
+        def _valid(name: str):
+            c = cookie_map.get(name)
+            if not c:
+                return False
+            val = (c.get("value") or "").strip()
+            if not val or val.lower() in ("deleted", "null", "undefined"):
+                return False
+            exp = c.get("expires")
+            if exp and exp > 0 and exp < now:
+                return False
+            return True
+
+        return _valid("pt_key") and _valid("pt_pin")
+
+    def _log_auth_diagnostic(self, reason: str, page=None):
+        try:
+            url = page.url if page else ""
+        except Exception:
+            url = ""
+
+        referrer = ""
+        if page:
+            try:
+                referrer = page.evaluate("() => document.referrer || ''") or ""
+            except Exception:
+                referrer = ""
+
+        cookies = []
+        try:
+            cookies = self.context.cookies()
+        except Exception:
+            pass
+
+        now = time.time()
+
+        def _cookie_status(name: str):
+            for c in cookies:
+                if c.get("name") == name:
+                    exp = c.get("expires") or 0
+                    exp_left = None
+                    if exp and exp > 0:
+                        exp_left = int(exp - now)
+                    domain = c.get("domain") or ""
+                    if exp_left is not None and exp_left < 0:
+                        return f"{name}=expired domain={domain} exp_left_s={exp_left}"
+                    if exp_left is not None:
+                        return f"{name}=ok domain={domain} exp_left_s={exp_left}"
+                    return f"{name}=ok domain={domain} exp=none"
+            return f"{name}=missing"
+
+        auth_ok = self._has_auth_cookies()
+        logger.warning(
+            "Auth diagnostic (%s): url=%s ref=%s auth_ok=%s %s %s persistent=%s profile=%s auth_file=%s auth_file_exists=%s",
+            reason,
+            url,
+            referrer,
+            auth_ok,
+            _cookie_status("pt_key"),
+            _cookie_status("pt_pin"),
+            self.use_persistent_context,
+            str(self.profile_dir),
+            self.auth_file,
+            os.path.exists(self.auth_file),
+        )
+
+    def _trim_url(self, url: str, max_len: int = 160):
+        if not url:
+            return ""
+        if len(url) <= max_len:
+            return url
+        return url[:max_len] + "..."
+
+    def _register_response_logger(self):
+        if not self.context:
+            return
+
+        def _on_response(resp):
+            try:
+                status = resp.status
+                url = resp.url or ""
+            except Exception:
+                return
+
+            if status != 403:
+                return
+            if "api.m.jd.com" not in url:
+                return
+
+            now = time.time()
+            if now - self._last_403_log_ts < 30:
+                return
+            self._last_403_log_ts = now
+
+            page = None
+            try:
+                page = resp.request.frame.page
+            except Exception:
+                page = None
+
+            self._log_auth_diagnostic(f"response-403:{self._trim_url(url)}", page)
+
+        try:
+            self.context.on("response", _on_response)
+        except Exception:
+            pass
+
     def _wait_for_auth_cookie(self, timeout=300000):
         """Wait until JD login cookies appear (pt_key/pt_pin or user profile)."""
         deadline = time.time() + (timeout / 1000)
         while time.time() < deadline:
+            if self._has_auth_cookies():
+                return True
+            
+            # Check URL for successful login redirects (any open page)
+            pages = []
             try:
-                cookies = self.context.cookies()
-                names = {c.get("name") for c in cookies}
-                # Relaxed cookie check: pt_key/pin/thor or even just 'nickname' which often appears after login
-                if any(n in names for n in ("pt_key", "pin", "thor", "pwdt_id", "unick")):
-                    return True
+                pages = self.context.pages
             except Exception:
-                pass
-            
-            # Check URL for successful login redirects
-            current_url = self.page.url
-            if any(s in current_url for s in ("order.jd.com", "home.jd.com", "user.jd.com", "joycenter.jd.com")):
-                 return True
-            
-            # If we are strictly on www.jd.com, check if we have username element (soft check)
-            if "www.jd.com" in current_url:
+                pages = []
+            for p in pages:
                 try:
-                    # Often when logged in on homepage, nickname appears
-                    if self.page.query_selector(".nickname") or self.page.query_selector(".user_name"):
-                         return True
-                except:
-                    pass
+                    current_url = p.url or ""
+                except Exception:
+                    continue
+                if any(s in current_url for s in ("order.jd.com", "home.jd.com", "user.jd.com", "joycenter.jd.com")):
+                    self.page = p
+                    return True
 
             time.sleep(1.0)
         raise TimeoutError("等待登录 Cookie 超时")
@@ -321,6 +506,7 @@ class JDScraper:
                 logger.warning(f"订单页跳转失败重试: {nav_err}")
             if "passport.jd.com" not in self.page.url:
                 return True
+            self._log_auth_diagnostic("login-redirect-to-passport", self.page)
             logger.warning("登录后仍在登录页，重试跳转订单列表...")
             time.sleep(2)
         return False
@@ -342,20 +528,27 @@ class JDScraper:
             "--password-store=basic",
             "--use-mock-keychain",
         ]
+        if self.force_window_size:
+            launch_args.append(f"--window-size={self.window_width},{self.window_height}")
+            launch_args.append("--window-position=0,0")
+        if self.window_maximized:
+            launch_args.append("--start-maximized")
 
         # Load state if exists
         load_options = {"storage_state": self.auth_file} if (use_storage and os.path.exists(self.auth_file)) else {}
+        viewport_options = {"width": self.viewport["width"], "height": self.viewport["height"]}
+        if self.window_maximized:
+            viewport_options = None
+
         context_options = {
             "user_agent": ua,
-            "viewport": {"width": self.viewport["width"], "height": self.viewport["height"]},
+            "viewport": viewport_options,
             "locale": self.locale,
             "timezone_id": self.timezone_id,
             "device_scale_factor": self.device_scale_factor,
             "is_mobile": self.is_mobile,
             "extra_http_headers": {
-                "Accept-Language": self.accept_language,
-                "Referer": "https://www.jd.com/",
-                "Origin": "https://www.jd.com"
+                "Accept-Language": self.accept_language
             },
         }
 
@@ -363,24 +556,44 @@ class JDScraper:
             try:
                 self.profile_dir.mkdir(parents=True, exist_ok=True)
                 logger.info(f"Launching persistent context: {self.profile_dir}")
-                try:
-                    self.context = self.playwright.chromium.launch_persistent_context(
-                        user_data_dir=str(self.profile_dir),
-                        headless=self.headless,
-                        args=launch_args,
-                        ignore_default_args=["--enable-automation"],
-                        **context_options,
-                        **load_options,
-                    )
-                except TypeError:
-                    # Older Playwright may not accept storage_state here.
-                    self.context = self.playwright.chromium.launch_persistent_context(
-                        user_data_dir=str(self.profile_dir),
-                        headless=self.headless,
-                        args=launch_args,
-                        ignore_default_args=["--enable-automation"],
-                        **context_options,
-                    )
+                channels = []
+                if self.browser_channel:
+                    channels.append(self.browser_channel)
+                channels.extend(["chrome", "msedge", None])
+                seen = set()
+                channels = [c for c in channels if not (c in seen or (seen.add(c) or False))]
+
+                last_err = None
+                for channel in channels:
+                    try:
+                        logger.info(f"Persistent context channel: {channel or 'bundled'}")
+                        common_kwargs = dict(
+                            user_data_dir=str(self.profile_dir),
+                            headless=self.headless,
+                            args=launch_args,
+                            ignore_default_args=["--enable-automation"],
+                            **context_options,
+                        )
+                        if channel:
+                            common_kwargs["channel"] = channel
+                        try:
+                            self.context = self.playwright.chromium.launch_persistent_context(
+                                **common_kwargs,
+                                **load_options,
+                            )
+                        except TypeError:
+                            # Older Playwright may not accept storage_state here.
+                            self.context = self.playwright.chromium.launch_persistent_context(
+                                **common_kwargs,
+                            )
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+                        continue
+
+                if last_err:
+                    raise last_err
                 self.browser = self.context.browser
             except Exception as e:
                 logger.warning(f"Persistent context launch failed, fallback to normal context: {e}")
@@ -417,6 +630,7 @@ class JDScraper:
                 **load_options,
             )
         
+        self._register_response_logger()
         # Inject stealth scripts to hide webdriver property
         self.context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
@@ -436,10 +650,28 @@ class JDScraper:
             );
         """)
 
-        self.page = self.context.new_page()
+        pages = []
+        try:
+            pages = self.context.pages
+        except Exception:
+            pages = []
+        if pages:
+            self.page = pages[0]
+            for extra in pages[1:]:
+                try:
+                    extra.close()
+                except Exception:
+                    pass
+        else:
+            self.page = self.context.new_page()
+        self._apply_window_state(self.page)
+        if self.force_window_size and not self.window_maximized:
+            try:
+                self.page.set_viewport_size({"width": self.window_width, "height": self.window_height})
+            except Exception:
+                pass
         try:
             self.stealth.apply_stealth_sync(self.context)
-            self.stealth.apply_stealth_sync(self.page)
         except Exception as e:
             logger.warning(f"Stealth apply failed: {e}")
         # Tighter but consistent timeouts avoid long hangs while staying human-like
@@ -473,16 +705,20 @@ class JDScraper:
                 pass
             self.http = None
 
-    def login(self, force_fresh: bool = False):
+    def login(self, force_fresh: bool = False, relogin: bool = False):
         """Manually login and save state."""
         with self._lock:
-            return self._login_locked(force_fresh=force_fresh)
+            return self._login_locked(force_fresh=force_fresh, relogin=relogin)
 
-    def _login_locked(self, force_fresh: bool = False):
+    def _login_locked(self, force_fresh: bool = False, relogin: bool = False):
         logger.info("Starting login process (Stealth Mode)...")
+        if force_fresh:
+            self._rotate_profile("login", relogin=relogin)
         if not self.browser:
             self.headless = False
             self.start_browser(use_storage=not force_fresh)
+        if force_fresh:
+            self._clear_context_storage()
         
         try:
             # If已有会话，直接打开订单列表
@@ -501,12 +737,15 @@ class JDScraper:
                 self.start_browser(use_storage=False)
 
             # 先打开首页伪装正常访问，再跳转登录页
-            logger.info("Opening JD homepage before login for warm-up...")
-            opened = self._open_jd_home()
-            if not opened:
-                logger.warning("JD 首页多次打开失败，仍将尝试登录页。")
+            if self.skip_home_warmup:
+                logger.info("Skipping JD homepage warm-up (JD_SKIP_HOME_WARMUP=1).")
+            else:
+                logger.info("Opening JD homepage before login for warm-up...")
+                opened = self._open_jd_home()
+                if not opened:
+                    logger.warning("JD 首页多次打开失败，仍将尝试登录页。")
 
-            self.page.goto("https://passport.jd.com/new/login.aspx", wait_until="domcontentloaded")
+            self._goto_login_page(retries=3, timeout=60000)
             logger.info("Please scan the QR code to login...")
 
             # Wait for auth cookies to appear
@@ -563,12 +802,13 @@ class JDScraper:
                 
                 # Check for auth redirect
                 if "passport.jd.com" in self.page.url:
+                    self._log_auth_diagnostic("list-redirect-to-passport", self.page)
                     if not reauth_attempted:
                         logger.warning("Session expired, auto re-login once...")
                         reauth_attempted = True
                         # Close current browser/context and refresh auth
                         self.close_browser()
-                        login_ok = self.login(force_fresh=True)
+                        login_ok = self.login(force_fresh=True, relogin=True)
                         if not login_ok:
                             raise Exception("Session expired and re-login failed.")
                         # Fresh browser with new storage state
@@ -617,6 +857,8 @@ class JDScraper:
                 if not success:
                     logger.error(f"Failed to parse page {page_num} after retries. Stopping to preserve data.")
                     break
+                if self.address_blocked:
+                    raise Exception(f"地址抓取被登录重定向中断: {self.address_blocked_reason}")
 
                 # Pagination Logic
                 if self.browse_every and page_num % self.browse_every == 0:
@@ -786,11 +1028,14 @@ class JDScraper:
 
                 # Fetch order address once per order (detail页)
                 if order_address is None:
-                    # 先尝试缓存
-                    if order_id in self.address_cache:
-                        order_address = self.address_cache[order_id]
-                    elif detail_url:
-                        order_address = self._get_order_address(order_id, detail_url)
+                    if not self.fetch_address:
+                        order_address = ""
+                    else:
+                        # 先尝试缓存
+                        if order_id in self.address_cache:
+                            order_address = self.address_cache[order_id]
+                        elif detail_url:
+                            order_address = self._get_order_address(order_id, detail_url)
 
                 img_src = ""
                 img_el = row.query_selector(".p-img img")
@@ -852,6 +1097,67 @@ class JDScraper:
         urls = [u.strip() for u in raw.split(",") if u.strip()]
         return urls
 
+    def _apply_window_state(self, page):
+        if not page:
+            return
+        if not (self.window_maximized or self.force_window_size):
+            return
+        try:
+            session = self.context.new_cdp_session(page)
+            info = session.send("Browser.getWindowForTarget")
+            window_id = info.get("windowId")
+            if not window_id:
+                return
+            if self.window_maximized:
+                session.send("Browser.setWindowBounds", {"windowId": window_id, "bounds": {"windowState": "maximized"}})
+            elif self.force_window_size:
+                session.send(
+                    "Browser.setWindowBounds",
+                    {"windowId": window_id, "bounds": {"width": self.window_width, "height": self.window_height}},
+                )
+        except Exception:
+            pass
+
+    def _rotate_profile(self, reason: str, relogin: bool):
+        if not self.profile_auto_new:
+            return False
+        if relogin and not self.profile_auto_new_on_relogin:
+            return False
+        if os.getenv("JD_PROFILE_DIR") or os.getenv("JD_FINGERPRINT_FILE"):
+            logger.warning("Auto profile rotate skipped due to explicit JD_PROFILE_DIR/JD_FINGERPRINT_FILE.")
+            return False
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = self.profile_name or "default"
+        new_name = f"{base_name}_{ts}"
+        self.profile_name = new_name
+        self.profile_dir = (self.base_dir / "profiles" / new_name).expanduser().resolve()
+        self.fingerprint_file = (self.profile_dir / "fingerprint.json").expanduser().resolve()
+        self.auth_file = str(self.profile_dir / "auth.json")
+
+        self.fingerprint = self._load_or_create_fingerprint()
+        self.user_agents = [self.fingerprint["user_agent"]]
+        self.locale = self.fingerprint["locale"]
+        self.timezone_id = self.fingerprint["timezone_id"]
+        self.accept_language = self.fingerprint["accept_language"]
+        self.viewport = self.fingerprint["viewport"]
+        self.device_scale_factor = self.fingerprint["device_scale_factor"]
+        self.is_mobile = self.fingerprint["is_mobile"]
+        logger.info(f"Profile rotated ({reason}): {self.profile_dir}")
+        return True
+
+    def _clear_context_storage(self):
+        if not self.context:
+            return
+        try:
+            self.context.clear_cookies()
+        except Exception:
+            pass
+        try:
+            self.context.clear_permissions()
+        except Exception:
+            pass
+
     def _load_or_create_fingerprint(self):
         default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         data = {}
@@ -881,8 +1187,8 @@ class JDScraper:
         width = _env_int("JD_VIEWPORT_W", viewport_data.get("width"))
         height = _env_int("JD_VIEWPORT_H", viewport_data.get("height"))
         if not width or not height:
-            width = random.randint(1366, 1920)
-            height = random.randint(768, 1080)
+            width = 1440
+            height = 900
 
         fingerprint = {
             "user_agent": os.getenv("JD_UA", data.get("user_agent", default_ua)),
@@ -966,10 +1272,17 @@ class JDScraper:
             try:
                 self._rate_limit("detail")
                 detail_page.goto(target, wait_until="domcontentloaded", timeout=20000)
-                detail_page.wait_for_load_state("networkidle", timeout=12000)
+                if "passport.jd.com" in (detail_page.url or ""):
+                    self._log_auth_diagnostic("detail-redirect-to-passport", detail_page)
+                    self._reset_detail_page()
+                    self.address_blocked = True
+                    self.address_blocked_reason = "detail_redirect_to_passport"
+                    return ""
                 reason = self._detect_risk_page(detail_page)
                 if reason and self._handle_risk_page(detail_page, reason, fatal=False):
                     self._reset_detail_page()
+                    self.address_blocked = True
+                    self.address_blocked_reason = f"detail_risk:{reason}"
                     return ""
                 if random.random() < self.detail_browse_prob:
                     self._dwell_and_scroll(detail_page, min_s=1.0, max_s=2.8)
@@ -1015,6 +1328,8 @@ class JDScraper:
 
                 self.address_cache[order_id] = info_text
                 detail_ok = True
+                if self.fetch_address:
+                    self._random_sleep(self.address_pause_min, self.address_pause_max)
                 return info_text
             finally:
                 try:

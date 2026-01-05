@@ -524,6 +524,7 @@ class MainWindow(QWidget):
         on_done(result)
 
     def _refresh_auth_status(self):
+        self.auth_path = Path(self.scraper.auth_file)
         if self.auth_path.exists():
             self.auth_label.setText("登录状态: 已保存 auth.json")
         else:

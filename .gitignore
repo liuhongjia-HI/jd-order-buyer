@@ -8,10 +8,12 @@ env/
 venv/
 .venv/
 
+
 # Project specific
 downloads/
 auth.json
 logs/
+profiles/
 
 # Env files
 .env
@@ -29,6 +31,7 @@ coverage.xml
 htmlcov/
 *.egg-info/
 pip-wheel-metadata/
+profiles/
 
 # Build artifacts
 build/

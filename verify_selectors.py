@@ -6,7 +6,12 @@ import time
 
 def verify():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    auth_file = os.path.join(base_dir, "auth.json")
+    profile_name = (os.getenv("JD_PROFILE", "default") or "default").strip()
+    profile_dir = os.getenv("JD_PROFILE_DIR", os.path.join(base_dir, "profiles", profile_name))
+    auth_file = os.getenv("JD_AUTH_FILE", os.path.join(profile_dir, "auth.json"))
+    legacy_auth = os.path.join(base_dir, "auth.json")
+    if not os.path.exists(auth_file) and os.path.exists(legacy_auth):
+        auth_file = legacy_auth
     
     if not os.path.exists(auth_file):
         print("ERROR: auth.json not found")

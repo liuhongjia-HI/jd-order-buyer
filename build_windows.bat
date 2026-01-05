@@ -47,7 +47,14 @@ if exist "%VENV_DIR%\Lib\site-packages\playwright\driver\package\.local-browsers
 )
 
 echo [4/5] Building...
-"%VENV_DIR%\Scripts\python.exe" -m PyInstaller --onefile --noconsole --name "%APP_NAME%" --collect-all playwright --collect-all playwright_stealth --collect-all PySide6 main.py
+"%VENV_DIR%\Scripts\python.exe" -m PyInstaller --onefile --noconsole --name "%APP_NAME%" ^
+    --hidden-import="playwright.sync_api" ^
+    --hidden-import="playwright_stealth" ^
+    --hidden-import="PySide6" ^
+    --collect-data="playwright" ^
+    --collect-all="playwright_stealth" ^
+    --exclude-module="tkinter" ^
+    main.py
 
 echo [5/5] Done. Output: dist\%APP_NAME%.exe
 endlocal

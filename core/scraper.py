@@ -30,8 +30,17 @@ class JDScraper:
         self.browser = None
         self.context = None
         self.page = None
+        self.detail_page = None
+        self.playwright = None
         self.base_dir = _data_base_dir()
         self.auth_file = str(self.base_dir / "auth.json")
+        self.profile_name = (os.getenv("JD_PROFILE", "default") or "default").strip()
+        default_profile_dir = self.base_dir / "profiles" / self.profile_name
+        self.profile_dir = Path(os.getenv("JD_PROFILE_DIR", default_profile_dir)).expanduser().resolve()
+        self.fingerprint_file = Path(
+            os.getenv("JD_FINGERPRINT_FILE", self.profile_dir / "fingerprint.json")
+        ).expanduser().resolve()
+        self.use_persistent_context = os.getenv("JD_PERSISTENT_PROFILE", "1") != "0"
         # 可配置下载目录与嵌入图片开关
         self.download_dir = Path(os.getenv("JD_DOWNLOAD_DIR", self.base_dir / "downloads")).expanduser().resolve()
         self.base_url = "https://order.jd.com/center/list.action"
@@ -40,19 +49,75 @@ class JDScraper:
         self.address_cache = {}
         self.embed_images = os.getenv("JD_EMBED_IMAGES", "1") != "0"
         self.goto_retries = self._safe_int(os.getenv("JD_GOTO_RETRIES", "3"), default=3)
-        
+        self.risk_wait_s = self._safe_int(os.getenv("JD_RISK_WAIT", "120"), default=120)
+        self.rate_limits = {
+            "page": self._safe_float(os.getenv("JD_RATE_PAGE_MIN", "1.8"), default=1.8),
+            "detail": self._safe_float(os.getenv("JD_RATE_DETAIL_MIN", "2.2"), default=2.2),
+            "image": self._safe_float(os.getenv("JD_RATE_IMAGE_MIN", "0.6"), default=0.6),
+        }
+        self.rate_last = {"page": 0.0, "detail": 0.0, "image": 0.0}
+        self.rate_multipliers = {"page": 1.0, "detail": 1.0, "image": 1.0}
+        self.rate_backoff_max = self._safe_float(os.getenv("JD_RATE_BACKOFF_MAX", "6"), default=6.0)
+        self.image_retries = self._safe_int(os.getenv("JD_IMAGE_RETRIES", "2"), default=2)
+        self.browse_prob = self._safe_float(os.getenv("JD_BROWSE_PROB", "0.35"), default=0.35)
+        self.browse_every = self._safe_int(os.getenv("JD_BROWSE_EVERY", "0"), default=0)
+        self.detail_browse_prob = self._safe_float(os.getenv("JD_DETAIL_BROWSE_PROB", "0.6"), default=0.6)
+        self.browse_urls = self._parse_browse_urls(os.getenv("JD_BROWSE_URLS", "https://www.jd.com/,https://home.jd.com/"))
+        self.http = requests.Session()
+        self.risk_url_keywords = (
+            "passport.jd.com",
+            "safe.jd.com",
+            "risk",
+            "captcha",
+            "verify",
+            "challenge",
+        )
+        self.risk_text_keywords = (
+            "验证码",
+            "安全验证",
+            "访问过于频繁",
+            "异常访问",
+            "风险",
+            "滑块",
+            "请使用京东客户端",
+        )
+        self.fingerprint = self._load_or_create_fingerprint()
         # Pool of UAs；可通过 JD_UA 固定，优先保持一致性
-        self.user_agents = [
-            os.getenv("JD_UA", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        ]
-        self.locale = os.getenv("JD_LOCALE", "zh-CN")
-        self.timezone_id = os.getenv("JD_TZ", "Asia/Shanghai")
-        self.accept_language = os.getenv("JD_ACCEPT_LANGUAGE", "zh-CN,zh;q=0.9")
+        self.user_agents = [self.fingerprint["user_agent"]]
+        self.locale = self.fingerprint["locale"]
+        self.timezone_id = self.fingerprint["timezone_id"]
+        self.accept_language = self.fingerprint["accept_language"]
+        self.viewport = self.fingerprint["viewport"]
+        self.device_scale_factor = self.fingerprint["device_scale_factor"]
+        self.is_mobile = self.fingerprint["is_mobile"]
 
     def _random_sleep(self, min_s=1.5, max_s=4.0):
         """Random delay to mimic human behavior"""
         delay = random.uniform(min_s, max_s)
         time.sleep(delay)
+
+    def _rate_limit(self, kind: str):
+        min_interval = self.rate_limits.get(kind, 0)
+        if min_interval <= 0:
+            return
+        multiplier = self.rate_multipliers.get(kind, 1.0)
+        min_interval = min_interval * multiplier
+        now = time.monotonic()
+        last = self.rate_last.get(kind, 0.0)
+        sleep_s = min_interval - (now - last)
+        if sleep_s > 0:
+            time.sleep(sleep_s + random.uniform(0.05, 0.25))
+        self.rate_last[kind] = time.monotonic()
+
+    def _bump_backoff(self, kind: str, factor: float = 1.6):
+        current = self.rate_multipliers.get(kind, 1.0)
+        next_val = min(current * factor, self.rate_backoff_max)
+        self.rate_multipliers[kind] = next_val
+
+    def _decay_backoff(self, kind: str, decay: float = 0.92):
+        current = self.rate_multipliers.get(kind, 1.0)
+        if current > 1.0:
+            self.rate_multipliers[kind] = max(1.0, current * decay)
 
     def _humanize_page(self):
         """轻量行为模拟：使用脚本滚动，避免占用真实鼠标。"""
@@ -66,10 +131,128 @@ class JDScraper:
         except Exception:
             pass
 
+    def _dwell_and_scroll(self, page, min_s=1.0, max_s=2.6):
+        try:
+            time.sleep(random.uniform(min_s, max_s))
+            for _ in range(random.randint(1, 2)):
+                delta = random.randint(300, 900)
+                page.evaluate(
+                    """(d) => { window.scrollBy({top: d, behavior: 'smooth'}); }""",
+                    delta
+                )
+                page.wait_for_timeout(random.randint(300, 900))
+            if random.random() < 0.4:
+                page.evaluate("""() => { window.scrollTo({top: 0, behavior: 'smooth'}); }""")
+        except Exception:
+            pass
+
+    def _simulate_browse_path(self, stage="start"):
+        if not self.context or not self.browse_urls:
+            return
+        if self.browse_prob <= 0:
+            return
+        if random.random() > self.browse_prob:
+            return
+
+        browse_page = self.context.new_page()
+        try:
+            try:
+                self.stealth.apply_stealth_sync(browse_page)
+            except Exception:
+                pass
+            logger.info(f"Simulating browse path ({stage})...")
+            for url in self.browse_urls:
+                try:
+                    self._rate_limit("page")
+                    browse_page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                    try:
+                        browse_page.wait_for_load_state("networkidle", timeout=8000)
+                    except Exception:
+                        pass
+                    reason = self._detect_risk_page(browse_page)
+                    if reason and self._handle_risk_page(browse_page, reason, fatal=False):
+                        break
+                    self._dwell_and_scroll(browse_page, min_s=1.0, max_s=2.6)
+                    self._decay_backoff("page")
+                except Exception as e:
+                    logger.warning(f"Browse path step failed: {url} -> {e}")
+                    self._bump_backoff("page")
+        finally:
+            try:
+                browse_page.close()
+            except Exception:
+                pass
+
+    def _detect_risk_page(self, page):
+        url = (page.url or "").lower()
+        for kw in self.risk_url_keywords:
+            if kw in url:
+                return f"url:{kw}"
+
+        try:
+            title = page.title() or ""
+        except Exception:
+            title = ""
+
+        try:
+            text = page.evaluate(
+                "() => (document.body && document.body.innerText) ? document.body.innerText.slice(0, 2000) : ''"
+            ) or ""
+        except Exception:
+            text = ""
+
+        haystack = f"{title}\n{text}"
+        for kw in self.risk_text_keywords:
+            if kw in haystack:
+                return f"text:{kw}"
+        return ""
+
+    def _handle_risk_page(self, page, reason: str, fatal: bool = True):
+        if not reason:
+            return False
+        logger.warning(f"Detected risk page ({reason}).")
+        self._bump_backoff("page", factor=2.0)
+        self._bump_backoff("detail", factor=2.0)
+        wait_s = max(5, self.risk_wait_s)
+        if self.headless:
+            if fatal:
+                raise Exception(f"检测到风控/验证码页，请人工处理后重试: {reason}")
+            return True
+
+        start = time.time()
+        while time.time() - start < wait_s:
+            time.sleep(2)
+            if not self._detect_risk_page(page):
+                logger.success("Risk page cleared manually.")
+                return False
+
+        if fatal:
+            raise Exception(f"风控页面未解除，请稍后重试: {reason}")
+        return True
+
+    def _get_detail_page(self):
+        if self.detail_page and not self.detail_page.is_closed():
+            return self.detail_page
+        self.detail_page = self.context.new_page()
+        try:
+            self.stealth.apply_stealth_sync(self.detail_page)
+        except Exception:
+            pass
+        return self.detail_page
+
+    def _reset_detail_page(self):
+        if self.detail_page and not self.detail_page.is_closed():
+            try:
+                self.detail_page.close()
+            except Exception:
+                pass
+        self.detail_page = None
+
     def _open_jd_home(self, retries=2):
         """Open JD homepage with basic retry to avoid staying on about:blank."""
         for attempt in range(retries):
             try:
+                self._rate_limit("page")
                 url = f"https://www.jd.com/?r={int(time.time()*1000)}"
                 logger.info(f"Opening JD homepage (attempt {attempt+1})...")
                 # Use domcontentloaded which is faster and sufficient for warm-up
@@ -83,6 +266,10 @@ class JDScraper:
 
                 # small human-like pause
                 self._random_sleep(1.2, 2.5)
+                reason = self._detect_risk_page(self.page)
+                if reason:
+                    if self._handle_risk_page(self.page, reason, fatal=False):
+                        continue
                 if "jd.com" in self.page.url:
                     return True
             except Exception as e:
@@ -142,10 +329,8 @@ class JDScraper:
         logger.info(f"Launching Browser (Headless={self.headless})...")
         self.playwright = sync_playwright().start()
         # Removed global hook to prevent potential startup hangs
-        
-        # Randomize viewport slightly
-        width = random.randint(1280, 1920)
-        height = random.randint(720, 1080)
+        if not self.http:
+            self.http = requests.Session()
 
         ua = self.user_agents[0]
         # Try launch options: Bundled -> Edge -> Chrome
@@ -157,48 +342,80 @@ class JDScraper:
             "--password-store=basic",
             "--use-mock-keychain",
         ]
-        
-        try:
-            logger.info("Generic launch...")
-            self.browser = self.playwright.chromium.launch(
-                headless=self.headless,
-                args=launch_args,
-                ignore_default_args=["--enable-automation"]
-            )
-        except Exception:
+
+        # Load state if exists
+        load_options = {"storage_state": self.auth_file} if (use_storage and os.path.exists(self.auth_file)) else {}
+        context_options = {
+            "user_agent": ua,
+            "viewport": {"width": self.viewport["width"], "height": self.viewport["height"]},
+            "locale": self.locale,
+            "timezone_id": self.timezone_id,
+            "device_scale_factor": self.device_scale_factor,
+            "is_mobile": self.is_mobile,
+            "extra_http_headers": {
+                "Accept-Language": self.accept_language,
+                "Referer": "https://www.jd.com/",
+                "Origin": "https://www.jd.com"
+            },
+        }
+
+        if self.use_persistent_context:
             try:
-                logger.info("Bundled browser not found. Trying system Edge...")
+                self.profile_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Launching persistent context: {self.profile_dir}")
+                try:
+                    self.context = self.playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(self.profile_dir),
+                        headless=self.headless,
+                        args=launch_args,
+                        ignore_default_args=["--enable-automation"],
+                        **context_options,
+                        **load_options,
+                    )
+                except TypeError:
+                    # Older Playwright may not accept storage_state here.
+                    self.context = self.playwright.chromium.launch_persistent_context(
+                        user_data_dir=str(self.profile_dir),
+                        headless=self.headless,
+                        args=launch_args,
+                        ignore_default_args=["--enable-automation"],
+                        **context_options,
+                    )
+                self.browser = self.context.browser
+            except Exception as e:
+                logger.warning(f"Persistent context launch failed, fallback to normal context: {e}")
+                self.use_persistent_context = False
+
+        if not self.use_persistent_context:
+            try:
+                logger.info("Generic launch...")
                 self.browser = self.playwright.chromium.launch(
-                    channel="msedge",
                     headless=self.headless,
                     args=launch_args,
                     ignore_default_args=["--enable-automation"]
                 )
             except Exception:
-                logger.info("Edge not found. Trying system Chrome...")
-                self.browser = self.playwright.chromium.launch(
-                    channel="chrome",
-                    headless=self.headless,
-                    args=launch_args,
-                    ignore_default_args=["--enable-automation"]
-                )
+                try:
+                    logger.info("Bundled browser not found. Trying system Edge...")
+                    self.browser = self.playwright.chromium.launch(
+                        channel="msedge",
+                        headless=self.headless,
+                        args=launch_args,
+                        ignore_default_args=["--enable-automation"]
+                    )
+                except Exception:
+                    logger.info("Edge not found. Trying system Chrome...")
+                    self.browser = self.playwright.chromium.launch(
+                        channel="chrome",
+                        headless=self.headless,
+                        args=launch_args,
+                        ignore_default_args=["--enable-automation"]
+                    )
 
-        
-        # Load state if exists
-        load_options = {"storage_state": self.auth_file} if (use_storage and os.path.exists(self.auth_file)) else {}
-        
-        self.context = self.browser.new_context(
-            user_agent=ua,
-            viewport={"width": width, "height": height},
-            locale=self.locale,
-            timezone_id=self.timezone_id,
-            extra_http_headers={
-                "Accept-Language": self.accept_language,
-                "Referer": "https://www.jd.com/",
-                "Origin": "https://www.jd.com"
-            },
-            **load_options
-        )
+            self.context = self.browser.new_context(
+                **context_options,
+                **load_options,
+            )
         
         # Inject stealth scripts to hide webdriver property
         self.context.add_init_script("""
@@ -230,16 +447,31 @@ class JDScraper:
         self.context.set_default_navigation_timeout(20000)
 
     def close_browser(self):
+        if self.detail_page:
+            try:
+                self.detail_page.close()
+            except Exception:
+                pass
+            self.detail_page = None
         if self.context:
             self.context.close()
             self.context = None
         if self.browser:
-            self.browser.close()
+            try:
+                self.browser.close()
+            except Exception:
+                pass
             self.browser = None
         if self.playwright:
             self.playwright.stop()
             self.playwright = None
         self.page = None
+        if self.http:
+            try:
+                self.http.close()
+            except Exception:
+                pass
+            self.http = None
 
     def login(self, force_fresh: bool = False):
         """Manually login and save state."""
@@ -321,6 +553,7 @@ class JDScraper:
         try:
             # Initial Navigation
             url = f"{self.base_url}?d={year_filter}&s=4096"
+            self._simulate_browse_path(stage="start")
             self._goto_with_retry(url, wait_until="domcontentloaded")
             self.page.wait_for_load_state("networkidle")
 
@@ -354,6 +587,9 @@ class JDScraper:
                 
                 while retry_count < max_retries:
                     try:
+                        reason = self._detect_risk_page(self.page)
+                        if reason:
+                            self._handle_risk_page(self.page, reason, fatal=True)
                         self._wait_for_orders_ready()
                         # Use correct selector for order tbodies
                         rows = self.page.query_selector_all("tbody[id^='tb-']")
@@ -373,6 +609,7 @@ class JDScraper:
                         break # Exit retry loop
                     except Exception as pg_err:
                         logger.warning(f"Error parsing page {page_num}: {pg_err}. Retrying ({retry_count+1}/{max_retries})...")
+                        self._bump_backoff("page")
                         self._random_sleep(2, 4)
                         self.page.reload()
                         retry_count += 1
@@ -382,6 +619,8 @@ class JDScraper:
                     break
 
                 # Pagination Logic
+                if self.browse_every and page_num % self.browse_every == 0:
+                    self._simulate_browse_path(stage=f"page-{page_num}")
                 if not self._go_next_page(last_first_id):
                     logger.success("Reached last page or pagination blocked.")
                     break
@@ -601,6 +840,69 @@ class JDScraper:
         except Exception:
             return default
 
+    def _safe_float(self, val, default=0.0):
+        try:
+            return float(val)
+        except Exception:
+            return default
+
+    def _parse_browse_urls(self, raw: str):
+        if not raw:
+            return []
+        urls = [u.strip() for u in raw.split(",") if u.strip()]
+        return urls
+
+    def _load_or_create_fingerprint(self):
+        default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        data = {}
+        if self.fingerprint_file.exists():
+            try:
+                with open(self.fingerprint_file, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception as e:
+                logger.warning(f"读取指纹文件失败，将重新生成: {e}")
+
+        def _env_int(name, fallback):
+            raw = os.getenv(name)
+            if raw:
+                try:
+                    return int(raw)
+                except Exception:
+                    pass
+            return fallback
+
+        def _env_bool(name, fallback):
+            raw = os.getenv(name)
+            if raw is None:
+                return fallback
+            return raw.lower() not in ("0", "false", "no")
+
+        viewport_data = data.get("viewport") or {}
+        width = _env_int("JD_VIEWPORT_W", viewport_data.get("width"))
+        height = _env_int("JD_VIEWPORT_H", viewport_data.get("height"))
+        if not width or not height:
+            width = random.randint(1366, 1920)
+            height = random.randint(768, 1080)
+
+        fingerprint = {
+            "user_agent": os.getenv("JD_UA", data.get("user_agent", default_ua)),
+            "locale": os.getenv("JD_LOCALE", data.get("locale", "zh-CN")),
+            "timezone_id": os.getenv("JD_TZ", data.get("timezone_id", "Asia/Shanghai")),
+            "accept_language": os.getenv("JD_ACCEPT_LANGUAGE", data.get("accept_language", "zh-CN,zh;q=0.9")),
+            "viewport": {"width": int(width), "height": int(height)},
+            "device_scale_factor": self._safe_float(os.getenv("JD_DEVICE_SCALE", data.get("device_scale_factor", "1.0")), default=1.0),
+            "is_mobile": _env_bool("JD_IS_MOBILE", bool(data.get("is_mobile", False))),
+        }
+
+        try:
+            self.fingerprint_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.fingerprint_file, "w", encoding="utf-8") as f:
+                json.dump(fingerprint, f, ensure_ascii=True, indent=2)
+        except Exception as e:
+            logger.warning(f"写入指纹文件失败: {e}")
+
+        return fingerprint
+
     def _collapse_order_amounts(self, df: pd.DataFrame, split_orders: set):
         """同一订单的多商品仅保留首行金额（拆单订单保留各行金额）。"""
         if "订单" not in df.columns or "下单金额" not in df.columns:
@@ -658,17 +960,25 @@ class JDScraper:
             elif target.startswith("/"):
                 target = urljoin(self.base_url, target)
 
-            detail_page = self.context.new_page()
+            detail_page = self._get_detail_page()
+            info_text = ""
+            detail_ok = False
             try:
+                self._rate_limit("detail")
                 detail_page.goto(target, wait_until="domcontentloaded", timeout=20000)
                 detail_page.wait_for_load_state("networkidle", timeout=12000)
+                reason = self._detect_risk_page(detail_page)
+                if reason and self._handle_risk_page(detail_page, reason, fatal=False):
+                    self._reset_detail_page()
+                    return ""
+                if random.random() < self.detail_browse_prob:
+                    self._dwell_and_scroll(detail_page, min_s=1.0, max_s=2.8)
                 # 等待地址区域渲染（容忍动态加载）
                 try:
                     detail_page.wait_for_selector(".item .label, .addr, .info-rcol", timeout=8000)
                 except TimeoutError:
                     logger.warning(f"订单详情未及时加载地址元素: {order_id}")
 
-                info_text = ""
                 # 优先：label 含“地址”或“收货地址”，寻找同级 info-rcol
                 label_locator = detail_page.locator("span.label").filter(has_text=re.compile("地址"))
                 if label_locator.count() > 0:
@@ -704,15 +1014,19 @@ class JDScraper:
                 info_text = re.sub(r"\s+", " ", info_text).strip()
 
                 self.address_cache[order_id] = info_text
+                detail_ok = True
                 return info_text
             finally:
                 try:
                     if not info_text:
                         logger.warning(f"订单地址为空，可能页面结构变化或需要登录态验证：{order_id}")
                 finally:
-                    detail_page.close()
+                    if detail_ok:
+                        self._decay_backoff("detail")
         except Exception as e:
             logger.warning(f"获取订单地址失败 {order_id}: {e}")
+            self._bump_backoff("detail")
+            self._reset_detail_page()
             self.address_cache[order_id] = ""
             return ""
 
@@ -731,16 +1045,19 @@ class JDScraper:
         col_idx = list(df.columns).index("商品图片") + 1  # 1-based
         col_letter = get_column_letter(col_idx)
 
-        headers = {"User-Agent": random.choice(self.user_agents)}
+        headers = {
+            "User-Agent": random.choice(self.user_agents),
+            "Accept-Language": self.accept_language,
+            "Referer": "https://www.jd.com/",
+        }
 
         for idx, url in enumerate(df["商品图片"]):
             if not url:
                 continue
             excel_row = idx + 2  # header is row 1
             try:
-                resp = requests.get(url, headers=headers, timeout=15)
-                resp.raise_for_status()
-                img_bytes = io.BytesIO(resp.content)
+                img_bytes = self._fetch_image_bytes(url, headers)
+                img_bytes = io.BytesIO(img_bytes)
                 img = XLImage(img_bytes)
                 img.width = 80
                 img.height = 80
@@ -754,12 +1071,61 @@ class JDScraper:
         wb.save(tmp_path)
         Path(tmp_path).replace(filepath)
 
+    def _fetch_image_bytes(self, url: str, headers: dict):
+        last_err = None
+        for attempt in range(1, self.image_retries + 2):
+            try:
+                if url.startswith("//"):
+                    url = "https:" + url
+                self._rate_limit("image")
+                if self.context and not self.context.is_closed():
+                    resp = self.context.request.get(url, headers=headers, timeout=15000)
+                    try:
+                        status = resp.status
+                        if status in (403, 429):
+                            last_err = Exception(f"image status {status}")
+                            self._bump_backoff("image", factor=1.8)
+                            self._random_sleep(0.8, 1.6)
+                            continue
+                        if status >= 400:
+                            raise Exception(f"image status {status}")
+                        body = resp.body()
+                    finally:
+                        try:
+                            resp.dispose()
+                        except Exception:
+                            pass
+                    self._decay_backoff("image")
+                    return body
+
+                if not self.http:
+                    self.http = requests.Session()
+                resp = self.http.get(url, headers=headers, timeout=15)
+                if resp.status_code in (403, 429):
+                    last_err = Exception(f"image status {resp.status_code}")
+                    self._bump_backoff("image", factor=1.8)
+                    self._random_sleep(0.8, 1.6)
+                    continue
+                resp.raise_for_status()
+                self._decay_backoff("image")
+                return resp.content
+            except Exception as e:
+                last_err = e
+                self._bump_backoff("image", factor=1.4)
+                self._random_sleep(0.6, 1.2)
+        if last_err:
+            raise last_err
+        raise Exception("image download failed")
+
     def _wait_for_orders_ready(self):
         """Ensure the order table and rows are present before parsing."""
         self.page.wait_for_selector("table.order-tb", timeout=8000)
         self.page.wait_for_selector("tbody[id^='tb-']", timeout=8000)
         if "passport.jd.com" in self.page.url:
             raise Exception("会话失效，请重新登录。")
+        reason = self._detect_risk_page(self.page)
+        if reason:
+            self._handle_risk_page(self.page, reason, fatal=True)
 
     def _goto_with_retry(self, url: str, wait_until="domcontentloaded", retries: int = None, timeout: int = 20000):
         """Navigate with basic retry to handle临时 DNS/网络抖动."""
@@ -767,12 +1133,18 @@ class JDScraper:
         last_err = None
         for attempt in range(1, retries + 1):
             try:
+                self._rate_limit("page")
                 self.page.goto(url, wait_until=wait_until, timeout=timeout)
+                reason = self._detect_risk_page(self.page)
+                if reason:
+                    self._handle_risk_page(self.page, reason, fatal=True)
+                self._decay_backoff("page")
                 logger.info(f"Goto success [{attempt}/{retries}]: {url}")
                 return True
             except Exception as e:
                 last_err = e
                 logger.warning(f"Goto失败({attempt}/{retries}): {url} -> {e}")
+                self._bump_backoff("page")
                 self._random_sleep(1.2, 2.5)
         if last_err:
             raise last_err

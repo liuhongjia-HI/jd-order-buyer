@@ -72,8 +72,15 @@ class JDScraper:
             try:
                 url = f"https://www.jd.com/?r={int(time.time()*1000)}"
                 logger.info(f"Opening JD homepage (attempt {attempt+1})...")
-                self.page.goto(url, wait_until="load", timeout=60000)
-                self.page.wait_for_load_state("networkidle", timeout=30000)
+                # Use domcontentloaded which is faster and sufficient for warm-up
+                self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                
+                # Try waiting for network idle but ignore timeout if page is usable
+                try:
+                    self.page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
+
                 # small human-like pause
                 self._random_sleep(1.2, 2.5)
                 if "jd.com" in self.page.url:
@@ -88,21 +95,35 @@ class JDScraper:
             raise Exception("未检测到 auth.json，请先登录一次再尝试采集。")
 
     def _wait_for_auth_cookie(self, timeout=300000):
-        """Wait until JD login cookies appear (pt_key/pt_pin)."""
+        """Wait until JD login cookies appear (pt_key/pt_pin or user profile)."""
         deadline = time.time() + (timeout / 1000)
         while time.time() < deadline:
             try:
                 cookies = self.context.cookies()
                 names = {c.get("name") for c in cookies}
-                if "pt_key" in names or "pt_pin" in names:
+                # Relaxed cookie check: pt_key/pin/thor or even just 'nickname' which often appears after login
+                if any(n in names for n in ("pt_key", "pin", "thor", "pwdt_id", "unick")):
                     return True
             except Exception:
                 pass
-            # also accept redirect signal
-            if "list.action" in self.page.url or "order.jd.com" in self.page.url:
-                return True
+            
+            # Check URL for successful login redirects
+            current_url = self.page.url
+            if any(s in current_url for s in ("order.jd.com", "home.jd.com", "user.jd.com", "joycenter.jd.com")):
+                 return True
+            
+            # If we are strictly on www.jd.com, check if we have username element (soft check)
+            if "www.jd.com" in current_url:
+                try:
+                    # Often when logged in on homepage, nickname appears
+                    if self.page.query_selector(".nickname") or self.page.query_selector(".user_name"):
+                         return True
+                except:
+                    pass
+
             time.sleep(1.0)
         raise TimeoutError("等待登录 Cookie 超时")
+
 
     def _open_order_after_login(self, retries=2):
         """Try to land on订单列表 after login cookies are detected."""
@@ -127,10 +148,29 @@ class JDScraper:
         height = random.randint(720, 1080)
 
         ua = self.user_agents[0]
-        self.browser = self.playwright.chromium.launch(
-            headless=self.headless,
-            args=["--disable-blink-features=AutomationControlled"] # Basic anti-detection arg
-        )
+        # Try launch options: Bundled -> Edge -> Chrome
+        try:
+            logger.info("Generic launch...")
+            self.browser = self.playwright.chromium.launch(
+                headless=self.headless,
+                args=["--disable-blink-features=AutomationControlled"]
+            )
+        except Exception:
+            try:
+                logger.info("Bundled browser not found. Trying system Edge...")
+                self.browser = self.playwright.chromium.launch(
+                    channel="msedge",
+                    headless=self.headless,
+                    args=["--disable-blink-features=AutomationControlled"]
+                )
+            except Exception:
+                logger.info("Edge not found. Trying system Chrome...")
+                self.browser = self.playwright.chromium.launch(
+                    channel="chrome",
+                    headless=self.headless,
+                    args=["--disable-blink-features=AutomationControlled"]
+                )
+
         
         # Load state if exists
         load_options = {"storage_state": self.auth_file} if (use_storage and os.path.exists(self.auth_file)) else {}

@@ -358,7 +358,7 @@ class MainWindow(QWidget):
                 border: 1px solid #30363d;
                 border-radius: 12px;
                 padding: 12px;
-                font-family: "JetBrains Mono", Consolas, monospace;
+                font-family: Consolas, "Courier New", monospace;
                 font-size: 13px;
                 line-height: 1.4;
             }

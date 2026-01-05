@@ -32,8 +32,10 @@ echo [2/5] Installing deps...
 "%VENV_DIR%\Scripts\python.exe" -m pip install -r requirements.txt
 "%VENV_DIR%\Scripts\python.exe" -m pip install pyinstaller
 
-echo [3/5] Installing Playwright chromium...
-"%VENV_DIR%\Scripts\python.exe" -m playwright install chromium
+"%VENV_DIR%\Scripts\python.exe" -m pip install playwright-stealth
+
+echo [3/5] Skipping bundled browser install (using system browser)...
+rem Playwright browsers will not be bundled.
 
 rem Ensure data dirs exist
 if not exist "downloads" mkdir "downloads"

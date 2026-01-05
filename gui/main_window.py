@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QStackedWidget,
 )
+from gui.animations import StartupAnimMixin, SmoothStackedWidget, HoverButton, animate_label_number
 
 
 class TaskWorker(QObject):
@@ -40,7 +41,7 @@ class TaskWorker(QObject):
             self.finished.emit(None, exc)
 
 
-class MainWindow(QWidget):
+class MainWindow(QWidget, StartupAnimMixin):
     def __init__(self, scraper):
         super().__init__()
         self.scraper = scraper
@@ -59,7 +60,12 @@ class MainWindow(QWidget):
         self._apply_styles()
         self._refresh_auth_status()
         self.refresh_downloads()
+        self.refresh_downloads()
         self.switch_view("console")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.animate_entry()
 
     def _build_ui(self):
         root = QHBoxLayout(self)
@@ -84,10 +90,10 @@ class MainWindow(QWidget):
         self.auth_label.setObjectName("authLabel")
         sidebar_layout.addWidget(self.auth_label)
 
-        self.nav_console = QPushButton("控制台 / Console")
+        self.nav_console = HoverButton("控制台 / Console")
         self.nav_console.setProperty("nav", True)
         self.nav_console.clicked.connect(lambda: self.switch_view("console"))
-        self.nav_data = QPushButton("数据预览 / Data")
+        self.nav_data = HoverButton("数据预览 / Data")
         self.nav_data.setProperty("nav", True)
         self.nav_data.clicked.connect(lambda: self.switch_view("data"))
         sidebar_layout.addWidget(self.nav_console)
@@ -99,7 +105,7 @@ class MainWindow(QWidget):
         self.settings_label.setObjectName("settingsLabel")
         sidebar_layout.addWidget(self.settings_label)
 
-        self.account_btn = QPushButton("退出京东登录")
+        self.account_btn = HoverButton("退出京东登录")
         self.account_btn.setObjectName("accountBtn")
         self.account_btn.clicked.connect(self.handle_account_btn)
         sidebar_layout.addWidget(self.account_btn)
@@ -112,7 +118,7 @@ class MainWindow(QWidget):
         main_layout.setContentsMargins(30, 30, 30, 30)
         main_layout.setSpacing(0)
 
-        self.stack = QStackedWidget()
+        self.stack = SmoothStackedWidget()
         main_layout.addWidget(self.stack)
         root.addWidget(self.main_content, 1)
 
@@ -154,7 +160,7 @@ class MainWindow(QWidget):
         self._init_range_options()
         action_row.addWidget(self.range_combo)
 
-        self.start_btn = QPushButton("开始采集")
+        self.start_btn = HoverButton("开始采集")
         self.start_btn.setObjectName("startBtn")
         self.start_btn.clicked.connect(self.start_scrape)
         action_row.addWidget(self.start_btn)
@@ -186,10 +192,10 @@ class MainWindow(QWidget):
         header_row.addLayout(title_col)
         header_row.addStretch()
 
-        self.open_downloads_btn = QPushButton("打开下载目录")
+        self.open_downloads_btn = HoverButton("打开下载目录")
         self.open_downloads_btn.setObjectName("btnSecondary")
         self.open_downloads_btn.clicked.connect(self.open_downloads_folder)
-        self.open_latest_btn = QPushButton("打开最新文件")
+        self.open_latest_btn = HoverButton("打开最新文件")
         self.open_latest_btn.setObjectName("btnPrimary")
         self.open_latest_btn.clicked.connect(self.open_latest_file)
         self.open_latest_btn.setEnabled(False)
@@ -656,7 +662,8 @@ class MainWindow(QWidget):
                 status = result.get("status")
                 if status == "success":
                     count = result.get("order_count") or result.get("count") or "-"
-                    self.count_label.setText(str(count))
+                    animate_label_number(self.count_label, 0, int(count) if str(count).isdigit() else 0)
+                    # self.count_label.setText(str(count))
                     self.status_label.setText("完成")
                     self._append_log("采集完成。")
                 elif status == "empty":

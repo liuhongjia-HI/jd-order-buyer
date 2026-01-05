@@ -21,7 +21,28 @@ class LoginWindow(QDialog):
         self.setup_ui()
         self.setup_styles()
         self.login_result.connect(self._on_login_result)
+        self.login_result.connect(self._on_login_result)
         self._logging_in = False
+        
+        # Dragging state
+        self._is_dragging = False
+        self._drag_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._is_dragging = True
+            self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._is_dragging:
+            self.move(event.globalPos() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._is_dragging = False
+            event.accept()
 
     def setup_ui(self):
         # Main Container (Rounded, Dark Blue)
@@ -31,7 +52,15 @@ class LoginWindow(QDialog):
         
         layout = QVBoxLayout(self.main_frame)
         layout.setContentsMargins(40, 40, 40, 40)
+        layout.setContentsMargins(40, 40, 40, 40)
         layout.setSpacing(20)
+
+        # Close Button (Absolute positioning for Top-Right)
+        self.close_btn = QPushButton("×", self.main_frame)
+        self.close_btn.setObjectName("CloseBtn")
+        self.close_btn.setGeometry(350, 15, 30, 30) # Top-Right inside frame
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.clicked.connect(self.reject) 
 
         # Title
         self.title_label = QLabel("系统登录")
@@ -168,6 +197,18 @@ class LoginWindow(QDialog):
                 color: #2d3b50;
                 font-size: 10px;
                 letter-spacing: 2px;
+            }
+            #CloseBtn {
+                background-color: transparent;
+                color: #6c7589;
+                font-size: 24px;
+                font-weight: 300;
+                border: none;
+                border-radius: 15px;
+            }
+            #CloseBtn:hover {
+                background-color: #ff4d4f;
+                color: #ffffff;
             }
         """)
 

@@ -40,6 +40,12 @@ rem Playwright browsers will not be bundled.
 rem Ensure data dirs exist
 if not exist "downloads" mkdir "downloads"
 
+echo [3.5/5] Cleaning up potential bundled browsers to save space...
+if exist "%VENV_DIR%\Lib\site-packages\playwright\driver\package\.local-browsers" (
+    rmdir /s /q "%VENV_DIR%\Lib\site-packages\playwright\driver\package\.local-browsers"
+    echo Removed bundled browsers from venv.
+)
+
 echo [4/5] Building...
 "%VENV_DIR%\Scripts\python.exe" -m PyInstaller --onefile --noconsole --name "%APP_NAME%" --collect-all playwright --collect-all playwright_stealth --collect-all PySide6 main.py
 

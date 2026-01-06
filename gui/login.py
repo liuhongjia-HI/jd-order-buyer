@@ -21,7 +21,6 @@ class LoginWindow(QDialog):
         self.setup_ui()
         self.setup_styles()
         self.login_result.connect(self._on_login_result)
-        self.login_result.connect(self._on_login_result)
         self._logging_in = False
         
         # Dragging state

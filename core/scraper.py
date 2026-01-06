@@ -1353,6 +1353,7 @@ class JDScraper:
         if "商品图片" not in df.columns:
             return
 
+        logger.info("Starting image embedding process...")
         tmp_path = Path(filepath).with_suffix(".tmp.xlsx")
         wb = load_workbook(filepath)
         ws = wb.active
@@ -1369,62 +1370,56 @@ class JDScraper:
             "Referer": "https://www.jd.com/",
         }
 
+        success_count = 0
         for idx, url in enumerate(df["商品图片"]):
             if not url:
                 continue
             excel_row = idx + 2  # header is row 1
             try:
                 img_bytes = self._fetch_image_bytes(url, headers)
-                img_bytes = io.BytesIO(img_bytes)
-                img = XLImage(img_bytes)
+                if not img_bytes:
+                    continue
+                    
+                img_stream = io.BytesIO(img_bytes)
+                img = XLImage(img_stream)
                 img.width = 80
                 img.height = 80
                 cell_addr = f"{col_letter}{excel_row}"
                 ws.add_image(img, cell_addr)
-                ws[cell_addr].value = ""
+                ws[cell_addr].value = ""  # Clear URL text
                 # Set row height to accommodate image
                 ws.row_dimensions[excel_row].height = 65
+                success_count += 1
             except Exception as e:
-                logger.warning(f"Embed image failed for row {excel_row}: {e}")
+                # Log only occasional errors to avoid spam
+                if idx % 10 == 0:
+                    logger.warning(f"Embed image failed for row {excel_row}: {e}")
                 continue
 
         wb.save(tmp_path)
         Path(tmp_path).replace(filepath)
+        logger.success(f"Embedded {success_count} images successfully.")
 
     def _fetch_image_bytes(self, url: str, headers: dict):
+        """
+        Fetch image bytes using requests (more stable for binaries) or playwright fallback.
+        """
+        if url.startswith("//"):
+            url = "https:" + url
+            
         last_err = None
+        # Prioritize requests for speed and stability
         for attempt in range(1, self.image_retries + 2):
             try:
-                if url.startswith("//"):
-                    url = "https:" + url
                 self._rate_limit("image")
-                if self.context and not self.context.is_closed():
-                    resp = self.context.request.get(url, headers=headers, timeout=15000)
-                    try:
-                        status = resp.status
-                        if status in (403, 429):
-                            last_err = Exception(f"image status {status}")
-                            self._bump_backoff("image", factor=1.8)
-                            self._random_sleep(0.8, 1.6)
-                            continue
-                        if status >= 400:
-                            raise Exception(f"image status {status}")
-                        body = resp.body()
-                    finally:
-                        try:
-                            resp.dispose()
-                        except Exception:
-                            pass
-                    self._decay_backoff("image")
-                    return body
-
                 if not self.http:
                     self.http = requests.Session()
-                resp = self.http.get(url, headers=headers, timeout=15)
+                
+                resp = self.http.get(url, headers=headers, timeout=10)
                 if resp.status_code in (403, 429):
-                    last_err = Exception(f"image status {resp.status_code}")
+                    last_err = Exception(f"requests status {resp.status_code}")
                     self._bump_backoff("image", factor=1.8)
-                    self._random_sleep(0.8, 1.6)
+                    self._random_sleep(1.0, 2.0)
                     continue
                 resp.raise_for_status()
                 self._decay_backoff("image")
@@ -1432,10 +1427,22 @@ class JDScraper:
             except Exception as e:
                 last_err = e
                 self._bump_backoff("image", factor=1.4)
+                # Fallback to playwright if requests fails (e.g. complex anti-bot on assets?)
+                # Usually static images don't need this, but we keep logic just in case.
+                if self.context and not self.context.is_closed():
+                    try:
+                        resp_pw = self.context.request.get(url, headers=headers, timeout=10000)
+                        if resp_pw.status == 200:
+                            body = resp_pw.body()
+                            resp_pw.dispose()
+                            return body
+                    except Exception:
+                        pass
                 self._random_sleep(0.6, 1.2)
+                
         if last_err:
-            raise last_err
-        raise Exception("image download failed")
+            logger.warning(f"Failed to fetch image {url}: {last_err}")
+        return None
 
     def _wait_for_orders_ready(self):
         """Ensure the order table and rows are present before parsing."""
